@@ -1,0 +1,206 @@
+import pandas as pd
+import numpy as np
+
+from geopy.distance import geodesic
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, ConfusionMatrixDisplay, roc_curve
+from xgboost import XGBClassifier
+
+
+data0 = pd.read_csv('fraudTest.csv')
+data.dropna(inplace=True)  # Drop rows with missing values
+print(f"Data shape after dropping missing values: {data0.shape}")
+print("Checking for missing values:")
+missing_values = data.isnull().sum()
+print(missing_values)
+# DateTime Feature Extraction
+data = data0
+data['trans_date_trans_time'] = pd.to_datetime(data['trans_date_trans_time'])
+data['hour'] = data['trans_date_trans_time'].dt.hour
+data['day_of_week'] = data['trans_date_trans_time'].dt.dayofweek
+data['month'] = data['trans_date_trans_time'].dt.month
+data['year'] = data['trans_date_trans_time'].dt.year
+
+# Geographic Features (Distance Calculation)
+user_locations = list(zip(data['lat'], data['long']))
+merchant_locations = list(zip(data['merch_lat'], data['merch_long']))
+data['distance'] = [geodesic(u, m).kilometers for u, m in zip(user_locations, merchant_locations)]
+
+# Categorical Feature Encoding
+label_encoder = LabelEncoder()
+data['category_encoded'] = label_encoder.fit_transform(data['category'])
+data['gender_encoded'] = label_encoder.fit_transform(data['gender'])
+
+# Age Calculation
+data['dob'] = pd.to_datetime(data['dob'])
+data['age'] = (pd.to_datetime('today') - data['dob']).dt.days // 365 -4
+
+# Categorical Features: Frequency Plot
+categorical_cols = ['category', 'gender',]
+for col in categorical_cols:
+    plt.figure(figsize=(8, 4))
+    sns.countplot(data=data, x=col, order=data[col].value_counts().index)
+    plt.title(f'Frequency of {col}')
+    plt.xticks(rotation=45)
+    plt.show()
+
+# Numerical Features: Distribution Plots
+numerical_cols = ['distance', 'age','amt', 'city_pop']
+for col in numerical_cols:
+    plt.figure(figsize=(8, 4))
+    sns.histplot(data[col], kde=True, bins=30)
+    plt.title(f'Distribution of {col}')
+    plt.show()
+
+
+fraud_count_before = data['is_fraud'].sum()
+for i in range(1, 6):  # Loop from 1 to 7
+    threshold = 2000 - 200 * i
+    data1 = data0[data0['amt'] < threshold]
+    fraud_count_after = data1['is_fraud'].sum()
+    print(f"Threshold: {threshold}, Fraud Count After: {fraud_count_after}, "
+          f"Fraud Count Before: {fraud_count_before}, Percentage Retained: {fraud_count_after / fraud_count_before * 100:.2f}%\n")
+
+
+data = data[data['amt']<1400]
+plt.figure(figsize=(8, 4))
+sns.histplot(data['amt'], kde=True, bins=30)
+plt.title(f'Distribution of {col}')
+plt.show()
+
+# Feature Scaling
+data = data.copy()
+scaler = StandardScaler()
+data[['amt', 'city_pop', 'distance']] = scaler.fit_transform(
+    data[['amt', 'city_pop', 'distance']]
+)
+
+# Feature dropping
+data = data.drop(columns=['Unnamed: 0', 'category','state','merchant','cc_num', 'trans_num', 'first', 'last', 'unix_time','gender','street','merch_lat','merch_long', 'city', 'zip', 'dob', 'job','trans_date_trans_time','lat','long'],errors='ignore')
+
+
+# Define features and target
+X = data.drop(columns=['is_fraud'])  # Features
+y = data['is_fraud']  # Target
+
+# Split into train and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+print(f"Training set size: {len(X_train)}")
+print(f"Test set size: {len(X_test)}")
+
+# Train the Random Forest model
+model = RandomForestClassifier(random_state=42, n_estimators=100)
+model.fit(X_train, y_train)
+
+# Make predictions
+y_pred = model.predict(X_test)
+y_proba = model.predict_proba(X_test)[:, 1]  # For ROC-AUC
+RandomForest = classification_report(y_test, y_pred)
+print("Classification Report:")
+print(RandomForest)
+
+# Generate the confusion matrix
+cm = confusion_matrix(y_test, y_pred)
+
+# Display the confusion matrix
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=model.classes_)
+disp.plot(cmap='Blues')
+
+from sklearn.metrics import roc_auc_score, roc_curve
+import matplotlib.pyplot as plt
+
+# Calculate ROC-AUC
+roc_auc = roc_auc_score(y_test, y_proba)
+print(f"ROC-AUC Score: {roc_auc:.2f}")
+
+# Plot the ROC Curve
+fpr, tpr, thresholds = roc_curve(y_test, y_proba)
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Random Guess')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve')
+plt.legend()
+plt.show()
+
+# Extract feature importances
+feature_importances = model.feature_importances_
+
+# Create a DataFrame for better visualization
+importance_df = pd.DataFrame({
+    'Feature': X_train.columns,
+    'Importance': feature_importances
+}).sort_values(by='Importance', ascending=False)
+
+# Plot feature importances
+plt.figure(figsize=(10, 6))
+plt.barh(importance_df['Feature'], importance_df['Importance'], color='skyblue')
+plt.title('Feature Importance from Random Forest')
+plt.gca().invert_yaxis()
+plt.show()
+
+print(importance_df)
+
+xgb_model = XGBClassifier(
+    random_state=42,
+    n_estimators=100,              # Number of boosting rounds
+    learning_rate=0.1,             # Step size shrinkage
+    max_depth=6,                   # Maximum depth of a tree
+    scale_pos_weight=len(y_train[y_train == 0]) / len(y_train[y_train == 1])  # Handle class imbalance
+)
+
+# Train the model
+xgb_model.fit(X_train, y_train)
+
+# Make predictions
+y_pred = xgb_model.predict(X_test)
+y_proba = xgb_model.predict_proba(X_test)[:, 1]  # Probabilities for ROC-AUC
+XGBoost = classification_report(y_test, y_pred)
+
+print("Classification Report:")
+print(XGBoost)
+
+cm = confusion_matrix(y_test, y_pred)
+
+# Display the confusion matrix
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=model.classes_)
+disp.plot(cmap='Blues')
+
+# Calculate and print ROC-AUC
+roc_auc = roc_auc_score(y_test, y_proba)
+print(f"ROC-AUC Score: {roc_auc:.2f}")
+
+# Plot ROC curve
+fpr, tpr, thresholds = roc_curve(y_test, y_proba)
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Random Guess')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve')
+plt.legend()
+plt.show()
+
+# Extract feature importances
+feature_importances = xgb_model.feature_importances_
+
+# Create a DataFrame for visualization
+importance_df = pd.DataFrame({
+    'Feature': X_train.columns,
+    'Importance': feature_importances
+}).sort_values(by='Importance', ascending=False)
+
+# Plot feature importances
+plt.figure(figsize=(10, 6))
+plt.barh(importance_df['Feature'], importance_df['Importance'], color='skyblue')
+plt.title('Feature Importance from XGBoost')
+plt.gca().invert_yaxis()
+plt.show()
+
+print(importance_df)
